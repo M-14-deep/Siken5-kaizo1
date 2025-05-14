@@ -6,13 +6,12 @@ import datetime
 import random
 import os
 import subprocess
-from cache import cache
 import ast
 
-# 3 => (3.0, 1.5) => (1.5, 1)
+# タイムアウト設定
 max_api_wait_time = (1.5, 1)
-# 10 => 10
 max_time = 10
+
 
 user_agents = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15',
@@ -41,7 +40,7 @@ def getRandomUserAgent():
 
 class InvidiousAPI:
     def __init__(self):
-        self.all = ast.literal_eval(requests.get('https://github.com/M-14-deep/Kari/raw/refs/heads/main/Kari.', headers=getRandomUserAgent(), timeout=(1.0, 0.5)).text)
+        self.all = ast.literal_eval(requests.get('https://github.com/M-14-deep/Kari/raw/refs/heads/main/kari', headers=getRandomUserAgent(), timeout=(1.0, 0.5)).text)
         
         self.video = self.all['video']
         self.playlist = self.all['playlist']
@@ -51,13 +50,19 @@ class InvidiousAPI:
 
         self.check_video = False
 
+        # 【新規追加】pipedキーがあれば、動画・コメントのエンドポイントに両方追加する
+        self.multiple_video_apis = self.video.copy()
+        self.multiple_comments_apis = self.comments.copy()
+        if "piped" in self.all:
+            self.multiple_video_apis.extend(self.all["piped"])
+            self.multiple_comments_apis.extend(self.all["piped"])
+
     def info(self):
         return {
             'API': self.all,
             'checkVideo': self.check_video
         }
 
-        
 invidious_api = InvidiousAPI()
 
 url = requests.get('https://raw.githubusercontent.com/LunaKamituki/Yuki-BBS-Server-URL/refs/heads/main/server.txt', headers=getRandomUserAgent()).text.rstrip()
@@ -304,6 +309,125 @@ def getVerifyCode():
         print(f"getVerifyCode__Error: {e}")
         return None
 
+class APITimeoutError(Exception):
+    pass
+
+# ---------------------- 複数エンドポイントから動画情報を取得する ----------------------
+def getMultipleVideoData(videoid):
+    """
+    piped含む複数の動画APIサーバーから、指定の動画IDの情報を取得する
+    """
+    def extract_video_data(api, t):
+        if 'recommendedvideo' in t:
+            recommended_videos = t["recommendedvideo"]
+        elif 'recommendedVideos' in t:
+            recommended_videos = t["recommendedVideos"]
+        else:
+            recommended_videos = [{
+                "videoId": "Load Failed",
+                "title": "Load Failed",
+                "authorId": "Load Failed",
+                "author": "Load Failed",
+                "lengthSeconds": 0,
+                "viewCountText": "Load Failed"
+            }]
+        adaptiveFormats = t.get("adaptiveFormats", [])
+        highstream_url = None
+        audio_url = None
+        for stream in adaptiveFormats:
+            if stream.get("container") == "webm" and stream.get("resolution") == "1080p":
+                highstream_url = stream.get("url")
+                break
+        if not highstream_url:
+            for stream in adaptiveFormats:
+                if stream.get("container") == "webm" and stream.get("resolution") == "720p":
+                    highstream_url = stream.get("url")
+                    break
+        for stream in adaptiveFormats:
+            if stream.get("container") == "m4a" and stream.get("audioQuality") == "AUDIO_QUALITY_MEDIUM":
+                audio_url = stream.get("url")
+                break
+        streamUrls = [
+            {'url': stream['url'], 'resolution': stream['resolution']}
+            for stream in adaptiveFormats if stream.get('container') == 'webm' and stream.get('resolution')
+        ]
+        return {
+            "api": api,
+            "video_urls": list(reversed([i["url"] for i in t.get("formatStreams", [])]))[:2],
+            "highstream_url": highstream_url,
+            "audio_url": audio_url,
+            "description_html": t.get("descriptionHtml", "").replace("\n", "<br>"),
+            "title": t.get("title", ""),
+            "length_text": str(datetime.timedelta(seconds=t.get("lengthSeconds", 0))),
+            "author_id": t.get("authorId", ""),
+            "author": t.get("author", ""),
+            "author_thumbnails_url": t.get("authorThumbnails", [{"url": ""}])[-1].get("url", ""),
+            "view_count": t.get("viewCount", ""),
+            "like_count": t.get("likeCount", ""),
+            "subscribers_count": t.get("subCountText", ""),
+            "streamUrls": streamUrls,
+            "recommended_videos": [
+                {
+                    "video_id": i.get("videoId", "Load Failed"),
+                    "title": i.get("title", "Load Failed"),
+                    "author_id": i.get("authorId", "Load Failed"),
+                    "author": i.get("author", "Load Failed"),
+                    "length_text": str(datetime.timedelta(seconds=i.get("lengthSeconds", 0))),
+                    "view_count_text": i.get("viewCountText", "Load Failed")
+                } for i in recommended_videos
+            ]
+        }
+
+    collected_data = []
+    for api in invidious_api.multiple_video_apis:
+        full_url = api + 'api/v1' + f"/videos/{urllib.parse.quote(videoid)}"
+        print(f"Trying video API: {full_url}")
+        try:
+            res = requests.get(full_url, headers=getRandomUserAgent(), timeout=max_api_wait_time)
+            if res.status_code == requests.codes.ok and isJSON(res.text):
+                t = json.loads(res.text)
+                data = extract_video_data(api, t)
+                collected_data.append(data)
+        except Exception as e:
+            print(f"Error with video API {api}: {e}")
+            continue
+    if not collected_data:
+        raise APITimeoutError("動画取得APIがタイムアウトしました")
+    return collected_data
+
+# ---------------------- 複数エンドポイントからコメントを取得する ----------------------
+def getMultipleCommentsData(videoid):
+    """
+    piped含む複数のコメントAPIサーバーから、指定の動画IDのコメントを取得する
+    """
+    collected_comments = []
+    for api in invidious_api.multiple_comments_apis:
+        full_url = api + 'api/v1' + f"/comments/{urllib.parse.quote(videoid)}?hl=jp"
+        print(f"Trying comments API: {full_url}")
+        try:
+            res = requests.get(full_url, headers=getRandomUserAgent(), timeout=max_api_wait_time)
+            if res.status_code == requests.codes.ok and isJSON(res.text):
+                data = json.loads(res.text)
+                comments = data.get("comments", [])
+                formatted_comments = [
+                    {
+                        "author": com.get("author", ""),
+                        "authoricon": com.get("authorThumbnails", [{"url": ""}])[-1].get("url", ""),
+                        "authorid": com.get("authorId", ""),
+                        "body": com.get("contentHtml", "").replace("\n", "<br>")
+                    } for com in comments
+                ]
+                collected_comments.append({
+                    "api": api,
+                    "comments": formatted_comments
+                })
+        except Exception as e:
+            print(f"Error with comments API {api}: {e}")
+            continue
+    if not collected_comments:
+        raise APITimeoutError("コメント取得APIがタイムアウトしました")
+    return collected_comments
+
 
 
 from fastapi import FastAPI, Depends
@@ -329,22 +453,19 @@ template = Jinja2Templates(directory='templates').TemplateResponse
 no_robot_meta_tag = '<meta name="robots" content="noindex,nofollow">'
 
 @app.get("/", response_class=HTMLResponse)
-def home(response: Response, request: Request, yuki: Union[str] = Cookie(None)):
+def home(response: Response, request: Request, yuki: Union[str, None] = Cookie(None)):
     if checkCookie(yuki):
         response.set_cookie("yuki", "True", max_age=60 * 60 * 24 * 7)
         return template("home.html", {"request": request})
-    print(checkCookie(yuki))
     return redirect("/genesis")
 
-
 @app.get('/watch', response_class=HTMLResponse)
-def video(v:str, response: Response, request: Request, yuki: Union[str] = Cookie(None), proxy: Union[str] = Cookie(None)):
-    # v: video_id
-    if not(checkCookie(yuki)):
+def video(v: str, response: Response, request: Request, yuki: Union[str, None] = Cookie(None), proxy: Union[str, None] = Cookie(None)):
+    if not checkCookie(yuki):
         return redirect("/")
-    response.set_cookie(key="yuki", value="True", max_age=7*24*60*60)
-    video_data = getVideoData(v)
-    '''
+    response.set_cookie("yuki", "True", max_age=7*24*60*60)
+    video_data = getMultipleVideoData(v)
+       '''
     return [
         {
             'video_urls': list(reversed([i["url"] for i in t["formatStreams"]]))[:2],
@@ -387,6 +508,23 @@ def video(v:str, response: Response, request: Request, yuki: Union[str] = Cookie
         "recommended_videos": video_data[1],
         "proxy":proxy
     })
+
+# 新エンドポイント：動画情報とコメントを同時に取得
+@app.get("/complete", response_class=JSONResponse)
+def complete(v: str, response: Response, request: Request):
+    video_data_results = getMultipleVideoData(v)
+    comments_data_results = getMultipleCommentsData(v)
+    return {"video_data": video_data_results, "comments_data": comments_data_results}
+
+# （getSearchData, getChannelData, getPlaylistData, getCommentsData, getVerifyCode などの既存関数は省略）
+def getVerifyCode():
+    try:
+        result = subprocess.run(["./yukiverify"], encoding='utf-8', stdout=subprocess.PIPE)
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        print(f"getVerifyCode__Error: {e}")
+        return None
+
 @app.get('/w', response_class=HTMLResponse)
 def video(v:str, response: Response, request: Request, yuki: Union[str] = Cookie(None), proxy: Union[str] = Cookie(None)):
     # v: video_id
