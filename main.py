@@ -31,27 +31,6 @@ user_agents = [
   'Mozilla/5.0 (iPhone; CPU iPhone OS 12_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.0 Mobile/15E148 Safari/604.1'
 ]
 
-import json
-import requests
-import urllib.parse
-import time
-import datetime
-import random
-import os
-import subprocess
-import ast
-
-# タイムアウト設定
-max_api_wait_time = (1.5, 1)
-max_time = 10
-
-# User-Agent リスト（省略部分あり）
-user_agents = [
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15',
-    # その他のUser-Agent...
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 12_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.0 Mobile/15E148 Safari/604.1'
-]
-
 def getRandomUserAgent():
     user_agent = random.choice(user_agents)
     print(user_agent)
