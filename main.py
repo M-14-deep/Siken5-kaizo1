@@ -706,7 +706,6 @@ def video(v:str, response: Response, request: Request, yuki: Union[str] = Cookie
             } for i in recommended_videos
         ]
     ]
-    '''
     response.set_cookie("yuki", "True", max_age=60 * 60 * 24 * 7)
     return template('watch.html', { # watch.htmlを準備してください( ・∇・)。通常の再生 + 画質を選択できる機能があると良い。
         "request": request,         # 画質のデータはstreamUrls.resolutionに入っています。ストリームURLはstreamUrls.url。
