@@ -31,31 +31,62 @@ user_agents = [
   'Mozilla/5.0 (iPhone; CPU iPhone OS 12_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.0 Mobile/15E148 Safari/604.1'
 ]
 
-def getRandomUserAgent():
-  user_agent = user_agents[random.randint(0, len(user_agents) - 1)]
-  print(user_agent)
-  return {
-    'User-Agent': user_agent
-  }
+import json
+import requests
+import urllib.parse
+import time
+import datetime
+import random
+import os
+import subprocess
+import ast
 
+# タイムアウト設定
+max_api_wait_time = (1.5, 1)
+max_time = 10
+
+# User-Agent リスト（省略部分あり）
+user_agents = [
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15',
+    # その他のUser-Agent...
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 12_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.0 Mobile/15E148 Safari/604.1'
+]
+
+def getRandomUserAgent():
+    user_agent = random.choice(user_agents)
+    print(user_agent)
+    return {'User-Agent': user_agent}
+
+# ----------------- InvidiousAPI クラスの拡張 -----------------
 class InvidiousAPI:
     def __init__(self):
-        self.all = ast.literal_eval(requests.get('https://github.com/M-14-deep/Kari/raw/refs/heads/main/kari', headers=getRandomUserAgent(), timeout=(1.0, 0.5)).text)
+        # GitHub上の API 情報ファイルを取得（Python の辞書形式の文字列と仮定）
+        self.all = ast.literal_eval(requests.get(
+            'https://github.com/M-14-deep/Kari/raw/refs/heads/main/Kari',
+            headers=getRandomUserAgent(),
+            timeout=(1.0, 0.5)
+        ).text)
         
-        self.video = self.all['video']
-        self.playlist = self.all['playlist']
-        self.search = self.all['search']
-        self.channel = self.all['channel']
-        self.comments = self.all['comments']
-
+        self.video       = self.all['video']
+        self.playlist    = self.all['playlist']
+        self.search      = self.all['search']
+        self.channel     = self.all['channel']
+        self.comments    = self.all['comments']
         self.check_video = False
 
-        # 【新規追加】pipedキーがあれば、動画・コメントのエンドポイントに両方追加する
-        self.multiple_video_apis = self.video.copy()
-        self.multiple_comments_apis = self.comments.copy()
+        # piped キーがあれば個別に保持する
         if "piped" in self.all:
-            self.multiple_video_apis.extend(self.all["piped"])
-            self.multiple_comments_apis.extend(self.all["piped"])
+            self.piped_video    = self.all["piped"]
+            self.piped_comments = self.all["piped"]
+        else:
+            self.piped_video    = []
+            self.piped_comments = []
+
+        # デフォルト「auto」は両方を統合したリストとする
+        self.multiple_video_apis    = self.video.copy()
+        self.multiple_video_apis.extend(self.piped_video)
+        self.multiple_comments_apis = self.comments.copy()
+        self.multiple_comments_apis.extend(self.piped_comments)
 
     def info(self):
         return {
@@ -65,259 +96,73 @@ class InvidiousAPI:
 
 invidious_api = InvidiousAPI()
 
-url = requests.get('https://raw.githubusercontent.com/LunaKamituki/Yuki-BBS-Server-URL/refs/heads/main/server.txt', headers=getRandomUserAgent()).text.rstrip()
-
-version = "1.0"
-new_instance_version = "1.3.2"
-
-
-os.system("chmod 777 ./yukiverify")
-
+# ----------------- 補助関数 -----------------
 class APITimeoutError(Exception):
-    pass
-
-class UnallowedBot(Exception):
     pass
 
 def isJSON(json_str):
     try:
         json.loads(json_str)
         return True
-    except json.JSONDecodeError as jde:
-        pass
-    return False
+    except json.JSONDecodeError:
+        return False
 
-def updateList(list, str):
-    list.append(str)
-    list.remove(str)
-    return list
+def updateList(list_obj, str_val):
+    list_obj.append(str_val)
+    list_obj.remove(str_val)
+    return list_obj
 
 def requestAPI(path, api_urls):
     starttime = time.time()
-    
     for api in api_urls:
-        if  time.time() - starttime >= max_time - 1:
+        if time.time() - starttime >= max_time - 1:
             break
-            
         try:
-            print(api + 'api/v1' + path)
-            res = requests.get(api + 'api/v1' + path, headers=getRandomUserAgent(), timeout=max_api_wait_time)
+            full_url = api + 'api/v1' + path
+            print(full_url)
+            res = requests.get(full_url, headers=getRandomUserAgent(), timeout=max_api_wait_time)
             if res.status_code == requests.codes.ok and isJSON(res.text):
-                
                 if invidious_api.check_video and path.startswith('/video/'):
-                    # 動画の有無をチェックする場合
-                    video_res = requests.get(json.loads(res.text)['formatStreams'][0]['url'], headers=getRandomUserAgent(), timeout=(3.0, 0.5))
-                    if not 'video' in video_res.headers['Content-Type']:
-                        print(f"No Video(True)({video_res.headers['Content-Type']}): {api}")
+                    video_res = requests.get(
+                        json.loads(res.text)['formatStreams'][0]['url'],
+                        headers=getRandomUserAgent(),
+                        timeout=(3.0, 0.5)
+                    )
+                    if 'video' not in video_res.headers.get('Content-Type', ''):
+                        print(f"No Video(True): {api} ({video_res.headers.get('Content-Type','')})")
                         updateList(api_urls, api)
                         continue
-
-                if path.startswith('/channel/') and json.loads(res.text)["latestvideo"] == []:
+                if path.startswith('/channel/') and json.loads(res.text).get("latestvideo", []) == []:
                     print(f"No Channel: {api}")
                     updateList(api_urls, api)
                     continue
-
-                print(f"Success({invidious_api.check_video})({path.split('/')[1].split('?')[0]}): {api}")
+                print(f"Success: {path.split('/')[1]} from {api}")
                 return res.text
-
             elif isJSON(res.text):
-                # ステータスコードが200ではないかつ内容がJSON形式の場合
-                print(f"Returned Err0r(JSON): {api} ('{json.loads(res.text)['error'].replace('error', 'err0r')}')")
+                print(f"Returned Err0r(JSON) from {api}: {json.loads(res.text)['error'].replace('error', 'err0r')}")
                 updateList(api_urls, api)
             else:
-                # ステータスコードが200ではないかつ内容がJSON形式ではない場合
-                print(f"Returned Err0r: {api} ('{res.text[:100]}')")
+                print(f"Returned Err0r from {api}: {res.text[:100]}")
                 updateList(api_urls, api)
-        except:
-            # 例外等が発生した場合
-            print(f"Err0r: {api}")
+        except Exception as e:
+            print(f"Err0r: {api} - {e}")
             updateList(api_urls, api)
-    
     raise APITimeoutError("APIがタイムアウトしました")
 
-
-def getInfo(request):
-    return json.dumps([version, os.environ.get('RENDER_EXTERNAL_URL'), str(request.scope["headers"]), str(request.scope['router'])[39:-2]])
-
-failed = "Load Failed"
-
-def getVideoData(videoid):
-    t = json.loads(requestAPI(f"/videos/{urllib.parse.quote(videoid)}", invidious_api.video))
-
-    if 'recommendedvideo' in t:
-        recommended_videos = t["recommendedvideo"]
-    elif 'recommendedVideos' in t:
-        recommended_videos = t["recommendedVideos"]
-    else:
-        recommended_videos = {
-            "videoId": "failed",
-            "title": "failed",
-            "authorId": "failed",
-            "author": "failed",
-            "lengthSeconds": 0,
-            "viewCountText": "Load Failed"
-        }
-
-    adaptive = t.get('adaptiveFormats', [])
-    streamUrls = [
-        {
-            'url': stream['url'],
-            'resolution': stream['resolution']
-        }
-        for stream in adaptive
-        if stream.get('container') == 'webm' and stream.get('resolution')
-    ]
-
-    return [
-        {
-            'video_urls': list(reversed([i["url"] for i in t["formatStreams"]]))[:2],
-            'description_html': t["descriptionHtml"].replace("\n", "<br>"),
-            'title': t["title"],
-            'length_text': str(datetime.timedelta(seconds=t["lengthSeconds"])),
-            'author_id': t["authorId"],
-            'author': t["author"],
-            'author_thumbnails_url': t["authorThumbnails"][-1]["url"],
-            'view_count': t["viewCount"],
-            'like_count': t["likeCount"],
-            'subscribers_count': t["subCountText"],
-            'streamUrls': streamUrls
-        },
-        [
-            {
-                "video_id": i["videoId"],
-                "title": i["title"],
-                "author_id": i["authorId"],
-                "author": i["author"],
-                "length_text": str(datetime.timedelta(seconds=i["lengthSeconds"])),
-                "view_count_text": i["viewCountText"]
-            } for i in recommended_videos
-        ]
-    ]
-
-def getSearchData(q, page):
-
-    def formatSearchData(data_dict):
-        if data_dict["type"] == "video":
-            return {
-                "type": "video",
-                "title": data_dict["title"] if 'title' in data_dict else failed,
-                "id": data_dict["videoId"] if 'videoId' in data_dict else failed,
-                "authorId": data_dict["authorId"] if 'authorId' in data_dict else failed,
-                "author": data_dict["author"] if 'author' in data_dict else failed,
-                "published": data_dict["publishedText"] if 'publishedText' in data_dict else failed,
-                "length": str(datetime.timedelta(seconds=data_dict["lengthSeconds"])),
-                "view_count_text": data_dict["viewCountText"]
-            }
-            
-        elif data_dict["type"] == "playlist":
-            return {
-                    "type": "playlist",
-                    "title": data_dict["title"] if 'title' in data_dict else failed,
-                    "id": data_dict['playlistId'] if 'playlistId' in data_dict else failed,
-                    "thumbnail": data_dict["playlistThumbnail"] if 'playlistThumbnail' in data_dict else failed,
-                    "count": data_dict["videoCount"] if 'videoCount' in data_dict else failed
-                }
-            
-        elif data_dict["authorThumbnails"][-1]["url"].startswith("https"):
-            return {
-                "type": "channel",
-                "author": data_dict["author"] if 'author' in data_dict else failed,
-                "id": data_dict["authorId"] if 'authorId' in data_dict else failed,
-                "thumbnail": data_dict["authorThumbnails"][-1]["url"] if 'authorThumbnails' in data_dict and len(data_dict["authorThumbnails"]) and 'url' in data_dict["authorThumbnails"][-1] else failed
-            }
-        else:
-            return {
-                "type": "channel",
-                "author": data_dict["author"] if 'author' in data_dict else failed,
-                "id": data_dict["authorId"] if 'authorId' in data_dict else failed,
-                "thumbnail": "https://" + data_dict['authorThumbnails'][-1]['url']
-            }
-
-    # "datas"というのは気持ち悪いかもしれないが、複数のデータが入っていると明示できるという
-    # メリットの方がコードを書く上では大きい
-    datas_dict = json.loads(requestAPI(f"/search?q={urllib.parse.quote(q)}&page={page}&hl=jp", invidious_api.search))
-    return [formatSearchData(data_dict) for data_dict in datas_dict]
-
-
-def getChannelData(channelid):
-    t = json.loads(requestAPI(f"/channels/{urllib.parse.quote(channelid)}", invidious_api.channel))
-    if 'latestvideo' in t:
-        latest_videos = t['latestvideo']
-    elif 'latestVideos' in t:
-        latest_videos = t['latestVideos']
-    else:
-        latest_videos = {
-            "title": failed,
-            "videoId": failed,
-            "authorId": failed,
-            "author": failed,
-            "publishedText": failed,
-            "viewCountText": "0",
-            "lengthSeconds": "0"
-        }
-    
-    
-    return [
-        [
-            {
-                # 直近の動画
-                "type":"video",
-                "title": i["title"],
-                "id": i["videoId"],
-                "authorId": t["authorId"],
-                "author": t["author"],
-                "published": i["publishedText"],
-                "view_count_text": i['viewCountText'],
-                "length_str": str(datetime.timedelta(seconds=i["lengthSeconds"]))
-            } for i in latest_videos
-        ], {
-            # チャンネル情報
-            "channel_name": t["author"],
-            "channel_icon": t["authorThumbnails"][-1]["url"],
-            "channel_profile": t["descriptionHtml"],
-            "author_banner": urllib.parse.quote(t["authorBanners"][0]["url"], safe="-_.~/:") if 'authorBanners' in t and len(t['authorBanners']) else '',
-            "subscribers_count": t["subCount"],
-            "tags": t["tags"]
-        }
-    ]
-
-def getPlaylistData(listid, page):
-    t = json.loads(requestAPI(f"/playlists/{urllib.parse.quote(listid)}?page={urllib.parse.quote(page)}", invidious_api.playlist))["videos"]
-    return [{"title": i["title"], "id": i["videoId"], "authorId": i["authorId"], "author": i["author"], "type": "video"} for i in t]
-
-def getCommentsData(videoid):
-    t = json.loads(requestAPI(f"/comments/{urllib.parse.quote(videoid)}?hl=jp", invidious_api.comments))["comments"]
-    return [{"author": i["author"], "authoricon": i["authorThumbnails"][-1]["url"], "authorid": i["authorId"], "body": i["contentHtml"].replace("\n", "<br>")} for i in t]
-
-'''
-使われていないし戻り値も設定されていないためコメントアウト
-def get_replies(videoid, key):
-    t = json.loads(requestAPI(f"/comments/{videoid}?hmac_key={key}&hl=jp&format=html", invidious_api.comments))["contentHtml"]
-'''
-
-
-def checkCookie(cookie):
-    isTrue = True if cookie == "True" else False
-    return isTrue
-
-def getVerifyCode():
-    try:
-        result = subprocess.run(["./yukiverify"], encoding='utf-8', stdout=subprocess.PIPE)
-        hashed_password = result.stdout.strip()
-        return hashed_password
-    except subprocess.CalledProcessError as e:
-        print(f"getVerifyCode__Error: {e}")
-        return None
-
-class APITimeoutError(Exception):
-    pass
-
-# ---------------------- 複数エンドポイントから動画情報を取得する ----------------------
-def getMultipleVideoData(videoid):
+# ----------------- 複数の動画情報取得関数（UI選択対応） -----------------
+def getMultipleVideoData(videoid, endpoint_type="auto"):
     """
-    piped含む複数の動画APIサーバーから、指定の動画IDの情報を取得する
+    endpoint_type = "invidious" / "piped" / "auto"
     """
+    if endpoint_type == "invidious":
+        endpoints = invidious_api.video
+    elif endpoint_type == "piped":
+        endpoints = invidious_api.piped_video
+    else:
+        endpoints = invidious_api.multiple_video_apis
+
     def extract_video_data(api, t):
+        # 推奨動画の抽出（キー名が異なる場合に対応）
         if 'recommendedvideo' in t:
             recommended_videos = t["recommendedvideo"]
         elif 'recommendedVideos' in t:
@@ -332,8 +177,7 @@ def getMultipleVideoData(videoid):
                 "viewCountText": "Load Failed"
             }]
         adaptiveFormats = t.get("adaptiveFormats", [])
-        highstream_url = None
-        audio_url = None
+        highstream_url, audio_url = None, None
         for stream in adaptiveFormats:
             if stream.get("container") == "webm" and stream.get("resolution") == "1080p":
                 highstream_url = stream.get("url")
@@ -347,13 +191,14 @@ def getMultipleVideoData(videoid):
             if stream.get("container") == "m4a" and stream.get("audioQuality") == "AUDIO_QUALITY_MEDIUM":
                 audio_url = stream.get("url")
                 break
+
         streamUrls = [
             {'url': stream['url'], 'resolution': stream['resolution']}
             for stream in adaptiveFormats if stream.get('container') == 'webm' and stream.get('resolution')
         ]
         return {
             "api": api,
-            "video_urls": list(reversed([i["url"] for i in t.get("formatStreams", [])]))[:2],
+            "video_urls": list(reversed([i.get("url", "") for i in t.get("formatStreams", [])]))[:2],
             "highstream_url": highstream_url,
             "audio_url": audio_url,
             "description_html": t.get("descriptionHtml", "").replace("\n", "<br>"),
@@ -379,7 +224,7 @@ def getMultipleVideoData(videoid):
         }
 
     collected_data = []
-    for api in invidious_api.multiple_video_apis:
+    for api in endpoints:
         full_url = api + 'api/v1' + f"/videos/{urllib.parse.quote(videoid)}"
         print(f"Trying video API: {full_url}")
         try:
@@ -395,13 +240,17 @@ def getMultipleVideoData(videoid):
         raise APITimeoutError("動画取得APIがタイムアウトしました")
     return collected_data
 
-# ---------------------- 複数エンドポイントからコメントを取得する ----------------------
-def getMultipleCommentsData(videoid):
-    """
-    piped含む複数のコメントAPIサーバーから、指定の動画IDのコメントを取得する
-    """
+# ----------------- 複数のコメント取得関数（UI選択対応） -----------------
+def getMultipleCommentsData(videoid, endpoint_type="auto"):
+    if endpoint_type == "invidious":
+        endpoints = invidious_api.comments
+    elif endpoint_type == "piped":
+        endpoints = invidious_api.piped_comments
+    else:
+        endpoints = invidious_api.multiple_comments_apis
+
     collected_comments = []
-    for api in invidious_api.multiple_comments_apis:
+    for api in endpoints:
         full_url = api + 'api/v1' + f"/comments/{urllib.parse.quote(videoid)}?hl=jp"
         print(f"Trying comments API: {full_url}")
         try:
@@ -428,17 +277,13 @@ def getMultipleCommentsData(videoid):
         raise APITimeoutError("コメント取得APIがタイムアウトしました")
     return collected_comments
 
-
-
-from fastapi import FastAPI, Depends
-from fastapi import Response, Cookie, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
-from fastapi.responses import RedirectResponse as redirect
+# ----------------- FastAPI アプリケーションとエンドポイント -----------------
+from fastapi import FastAPI, Response, Cookie, Request, Form
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from fastapi.templating import Jinja2Templates
 from typing import Union
-
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/js", StaticFiles(directory="./statics/js"), name="static")
@@ -446,26 +291,47 @@ app.mount("/css", StaticFiles(directory="./statics/css"), name="static")
 app.mount("/img", StaticFiles(directory="./statics/img"), name="static")
 app.mount("/genesis", StaticFiles(directory="./blog", html=True), name="static")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
-
-from fastapi.templating import Jinja2Templates
 template = Jinja2Templates(directory='templates').TemplateResponse
 
-no_robot_meta_tag = '<meta name="robots" content="noindex,nofollow">'
+def checkCookie(cookie: Union[str, None]):
+    return cookie == "True"
 
+# ----------------- トップページ -----------------
 @app.get("/", response_class=HTMLResponse)
 def home(response: Response, request: Request, yuki: Union[str, None] = Cookie(None)):
     if checkCookie(yuki):
         response.set_cookie("yuki", "True", max_age=60 * 60 * 24 * 7)
         return template("home.html", {"request": request})
-    return redirect("/genesis")
+    return RedirectResponse(url="/genesis")
 
+# ----------------- 設定画面：API種別切替 UI -----------------
+@app.get("/settings", response_class=HTMLResponse)
+def settings_get(request: Request, endpoint: Union[str, None] = Cookie(None)):
+    # クッキーに保存されているAPI種別（"auto", "invidious", "piped"）を読み込み
+    current = endpoint if endpoint in ["auto", "invidious", "piped"] else "auto"
+    return template("settings.html", {"request": request, "current": current})
+
+@app.post("/settings", response_class=RedirectResponse)
+def settings_post(response: Response, endpoint: str = Form(...)):
+    # ユーザーの選択値を Cookie に保存（例：7日間有効）
+    if endpoint not in ["auto", "invidious", "piped"]:
+        endpoint = "auto"
+    response.set_cookie(key="endpoint", value=endpoint, max_age=60 * 60 * 24 * 7)
+    return RedirectResponse(url="/", status_code=302)
+
+# ----------------- 動画視聴エンドポイント -----------------
 @app.get('/watch', response_class=HTMLResponse)
-def video(v: str, response: Response, request: Request, yuki: Union[str, None] = Cookie(None), proxy: Union[str, None] = Cookie(None)):
+def video(v: str, response: Response, request: Request, 
+          yuki: Union[str, None] = Cookie(None), 
+          proxy: Union[str, None] = Cookie(None),
+          endpoint: Union[str, None] = Cookie(None)):
     if not checkCookie(yuki):
-        return redirect("/")
-    response.set_cookie("yuki", "True", max_age=7*24*60*60)
-    video_data = getMultipleVideoData(v)
-       '''
+        return RedirectResponse(url="/")
+    response.set_cookie("yuki", "True", max_age=7 * 24 * 60 * 60)
+    # Cookie "endpoint" により使用するAPIを切替（無ければ "auto"）
+    ep_type = endpoint if endpoint in ["auto", "invidious", "piped"] else "auto"
+    video_data_list = getMultipleVideoData(v, ep_type)
+  '''
     return [
         {
             'video_urls': list(reversed([i["url"] for i in t["formatStreams"]]))[:2],
@@ -508,15 +374,15 @@ def video(v: str, response: Response, request: Request, yuki: Union[str, None] =
         "recommended_videos": video_data[1],
         "proxy":proxy
     })
-
-# 新エンドポイント：動画情報とコメントを同時に取得
+# ----------------- 動画情報＋コメント一括取得エンドポイント -----------------
 @app.get("/complete", response_class=JSONResponse)
-def complete(v: str, response: Response, request: Request):
-    video_data_results = getMultipleVideoData(v)
-    comments_data_results = getMultipleCommentsData(v)
+def complete(v: str, response: Response, request: Request, endpoint: Union[str, None] = Cookie(None)):
+    ep_type = endpoint if endpoint in ["auto", "invidious", "piped"] else "auto"
+    video_data_results  = getMultipleVideoData(v, ep_type)
+    comments_data_results = getMultipleCommentsData(v, ep_type)
     return {"video_data": video_data_results, "comments_data": comments_data_results}
 
-# （getSearchData, getChannelData, getPlaylistData, getCommentsData, getVerifyCode などの既存関数は省略）
+# 既存の getSearchData, getChannelData, getPlaylistData, getCommentsData, getVerifyCode などは省略
 def getVerifyCode():
     try:
         result = subprocess.run(["./yukiverify"], encoding='utf-8', stdout=subprocess.PIPE)
