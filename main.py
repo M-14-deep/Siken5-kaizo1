@@ -41,7 +41,7 @@ class InvidiousAPI:
     def __init__(self):
         # GitHub上の API 情報ファイルを取得（Python の辞書形式の文字列と仮定）
         self.all = ast.literal_eval(requests.get(
-            'https://github.com/M-14-deep/Kari/raw/refs/heads/main/Kari',
+            'https://github.com/M-14-deep/Kari/raw/refs/heads/main/kari',
             headers=getRandomUserAgent(),
             timeout=(1.0, 0.5)
         ).text)
