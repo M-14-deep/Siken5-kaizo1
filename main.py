@@ -511,7 +511,6 @@ def video(v: str, response: Response, request: Request,
     # Cookie "endpoint" により使用するAPIを切替（無ければ "auto"）
     ep_type = endpoint if endpoint in ["auto", "invidious", "piped"] else "auto"
     video_data_list = getMultipleVideoData(v, ep_type)
-  '''
     return [
         {
             'video_urls': list(reversed([i["url"] for i in t["formatStreams"]]))[:2],
