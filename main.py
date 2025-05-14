@@ -534,6 +534,7 @@ def video(v: str, response: Response, request: Request,
                 "view_count_text": i["viewCountText"]
             } for i in recommended_videos
     ]
+    ]
     '''
     response.set_cookie("yuki", "True", max_age=60 * 60 * 24 * 7)
     return template('video.html', {
