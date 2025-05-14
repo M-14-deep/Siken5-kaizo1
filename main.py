@@ -6,8 +6,8 @@ import datetime
 import random
 import os
 import subprocess
+from cache import cache
 import ast
-
 # タイムアウト設定
 max_api_wait_time = (1.5, 1)
 max_time = 10
