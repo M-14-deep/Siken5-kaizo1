@@ -256,6 +256,207 @@ def getMultipleCommentsData(videoid, endpoint_type="auto"):
         raise APITimeoutError("コメント取得APIがタイムアウトしました")
     return collected_comments
 
+def getInfo(request):
+    return json.dumps([version, os.environ.get('RENDER_EXTERNAL_URL'), str(request.scope["headers"]), str(request.scope['router'])[39:-2]])
+
+failed = "Load Failed"
+
+def getVideoData(videoid):
+    t = json.loads(requestAPI(f"/videos/{urllib.parse.quote(videoid)}", invidious_api.video))
+
+    # 推奨動画の情報（キー名の違いに対応）
+    if 'recommendedvideo' in t:
+        recommended_videos = t["recommendedvideo"]
+    elif 'recommendedVideos' in t:
+        recommended_videos = t["recommendedVideos"]
+    else:
+        recommended_videos = [{
+            "videoId": failed,
+            "title": failed,
+            "authorId": failed,
+            "author": failed,
+            "lengthSeconds": 0,
+            "viewCountText": "Load Failed"
+        }]
+
+    # 【新規追加】adaptiveFormats から高画質動画と音声の URL を抽出する
+    adaptiveFormats = t.get("adaptiveFormats", [])
+    highstream_url = None
+    audio_url = None
+
+    # 高画質: container == 'webm' かつ resolution == '1080p' のストリーム
+    for stream in adaptiveFormats:
+        if stream.get("container") == "webm" and stream.get("resolution") == "1080p":
+            highstream_url = stream.get("url")
+            break
+    if not highstream_url:
+        for stream in adaptiveFormats:
+            if stream.get("container") == "webm" and stream.get("resolution") == "720p":
+                highstream_url = stream.get("url")
+                break
+
+
+    # 音声: container == 'm4a' かつ audioQuality == 'AUDIO_QUALITY_MEDIUM' のストリーム
+    for stream in adaptiveFormats:
+        if stream.get("container") == "m4a" and stream.get("audioQuality") == "AUDIO_QUALITY_MEDIUM":
+            audio_url = stream.get("url")
+            break
+
+    adaptive = t.get('adaptiveFormats', [])
+    streamUrls = [
+        {
+            'url': stream['url'],
+            'resolution': stream['resolution']
+        }
+        for stream in adaptive
+        if stream.get('container') == 'webm' and stream.get('resolution')
+    ]
+    return [
+      {
+        # 既存処理（ここでは formatStreams のURLを逆順にして上位2件を使用）
+        'video_urls': list(reversed([i["url"] for i in t["formatStreams"]]))[:2],
+        # 追加：高画質動画と音声のURL
+        'highstream_url': highstream_url,
+        'audio_url': audio_url,
+        'description_html': t["descriptionHtml"].replace("\n", "<br>"),
+        'title': t["title"],
+        'length_text': str(datetime.timedelta(seconds=t["lengthSeconds"])),
+        'author_id': t["authorId"],
+        'author': t["author"],
+        'author_thumbnails_url': t["authorThumbnails"][-1]["url"],
+        'view_count': t["viewCount"],
+        'like_count': t["likeCount"],
+        'subscribers_count': t["subCountText"],
+        'streamUrls': streamUrls
+    },
+
+    [
+      {
+        "video_id": i["videoId"],
+        "title": i["title"],
+        "author_id": i["authorId"],
+        "author": i["author"],
+        "length_text": str(datetime.timedelta(seconds=i["lengthSeconds"])),
+        "view_count_text": i["viewCountText"]
+    } for i in recommended_videos]
+    
+]
+
+def getSearchData(q, page):
+
+    def formatSearchData(data_dict):
+        if data_dict["type"] == "video":
+            return {
+                "type": "video",
+                "title": data_dict["title"] if 'title' in data_dict else failed,
+                "id": data_dict["videoId"] if 'videoId' in data_dict else failed,
+                "authorId": data_dict["authorId"] if 'authorId' in data_dict else failed,
+                "author": data_dict["author"] if 'author' in data_dict else failed,
+                "published": data_dict["publishedText"] if 'publishedText' in data_dict else failed,
+                "length": str(datetime.timedelta(seconds=data_dict["lengthSeconds"])),
+                "view_count_text": data_dict["viewCountText"]
+            }
+            
+        elif data_dict["type"] == "playlist":
+            return {
+                    "type": "playlist",
+                    "title": data_dict["title"] if 'title' in data_dict else failed,
+                    "id": data_dict['playlistId'] if 'playlistId' in data_dict else failed,
+                    "thumbnail": data_dict["playlistThumbnail"] if 'playlistThumbnail' in data_dict else failed,
+                    "count": data_dict["videoCount"] if 'videoCount' in data_dict else failed
+                }
+            
+        elif data_dict["authorThumbnails"][-1]["url"].startswith("https"):
+            return {
+                "type": "channel",
+                "author": data_dict["author"] if 'author' in data_dict else failed,
+                "id": data_dict["authorId"] if 'authorId' in data_dict else failed,
+                "thumbnail": data_dict["authorThumbnails"][-1]["url"] if 'authorThumbnails' in data_dict and len(data_dict["authorThumbnails"]) and 'url' in data_dict["authorThumbnails"][-1] else failed
+            }
+        else:
+            return {
+                "type": "channel",
+                "author": data_dict["author"] if 'author' in data_dict else failed,
+                "id": data_dict["authorId"] if 'authorId' in data_dict else failed,
+                "thumbnail": "https://" + data_dict['authorThumbnails'][-1]['url']
+            }
+
+    # "datas"というのは気持ち悪いかもしれないが、複数のデータが入っていると明示できるという
+    # メリットの方がコードを書く上では大きい
+    datas_dict = json.loads(requestAPI(f"/search?q={urllib.parse.quote(q)}&page={page}&hl=jp", invidious_api.search))
+    return [formatSearchData(data_dict) for data_dict in datas_dict]
+
+
+def getChannelData(channelid):
+    t = json.loads(requestAPI(f"/channels/{urllib.parse.quote(channelid)}", invidious_api.channel))
+    if 'latestvideo' in t:
+        latest_videos = t['latestvideo']
+    elif 'latestVideos' in t:
+        latest_videos = t['latestVideos']
+    else:
+        latest_videos = {
+            "title": failed,
+            "videoId": failed,
+            "authorId": failed,
+            "author": failed,
+            "publishedText": failed,
+            "viewCountText": "0",
+            "lengthSeconds": "0"
+        }
+    
+    
+    return [
+        [
+            {
+                # 直近の動画
+                "type":"video",
+                "title": i["title"],
+                "id": i["videoId"],
+                "authorId": t["authorId"],
+                "author": t["author"],
+                "published": i["publishedText"],
+                "view_count_text": i['viewCountText'],
+                "length_str": str(datetime.timedelta(seconds=i["lengthSeconds"]))
+            } for i in latest_videos
+        ], {
+            # チャンネル情報
+            "channel_name": t["author"],
+            "channel_icon": t["authorThumbnails"][-1]["url"],
+            "channel_profile": t["descriptionHtml"],
+            "author_banner": urllib.parse.quote(t["authorBanners"][0]["url"], safe="-_.~/:") if 'authorBanners' in t and len(t['authorBanners']) else '',
+            "subscribers_count": t["subCount"],
+            "tags": t["tags"]
+        }
+    ]
+
+def getPlaylistData(listid, page):
+    t = json.loads(requestAPI(f"/playlists/{urllib.parse.quote(listid)}?page={urllib.parse.quote(page)}", invidious_api.playlist))["videos"]
+    return [{"title": i["title"], "id": i["videoId"], "authorId": i["authorId"], "author": i["author"], "type": "video"} for i in t]
+
+def getCommentsData(videoid):
+    t = json.loads(requestAPI(f"/comments/{urllib.parse.quote(videoid)}?hl=jp", invidious_api.comments))["comments"]
+    return [{"author": i["author"], "authoricon": i["authorThumbnails"][-1]["url"], "authorid": i["authorId"], "body": i["contentHtml"].replace("\n", "<br>")} for i in t]
+
+'''
+使われていないし戻り値も設定されていないためコメントアウト
+def get_replies(videoid, key):
+    t = json.loads(requestAPI(f"/comments/{videoid}?hmac_key={key}&hl=jp&format=html", invidious_api.comments))["contentHtml"]
+'''
+
+
+def checkCookie(cookie):
+    isTrue = True if cookie == "True" else False
+    return isTrue
+
+def getVerifyCode():
+    try:
+        result = subprocess.run(["./yukiverify"], encoding='utf-8', stdout=subprocess.PIPE)
+        hashed_password = result.stdout.strip()
+        return hashed_password
+    except subprocess.CalledProcessError as e:
+        print(f"getVerifyCode__Error: {e}")
+        return None
+
 # ----------------- FastAPI アプリケーションとエンドポイント -----------------
 from fastapi import FastAPI, Response, Cookie, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
